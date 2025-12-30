@@ -1,0 +1,147 @@
+/**
+ * Google Forms va Telegram Bot Integratsiyasi
+ * Universal variant: So'rovnoma va formalar uchun
+ */
+
+const TOKEN = 'Telegrambot token'; 
+const FORM_ID = 'forms id'; 
+
+function doPost(e) {
+  const contents = JSON.parse(e.postData.contents);
+  if (!contents.message) return;
+
+  const chatId = contents.message.chat.id;
+  const text = contents.message.text;
+  const userProperties = PropertiesService.getUserProperties();
+
+  const form = FormApp.openById(FORM_ID);
+  const items = form.getItems();
+  let step = userProperties.getProperty(chatId);
+
+  // 1. /start - Kirish qismi
+  if (text === "/start") {
+    userProperties.deleteProperty(chatId);
+    userProperties.deleteProperty(chatId + "_answers");
+    
+    const formTitle = form.getTitle();
+    const formDesc = form.getDescription() || "Iltimos, so'rovnomani to'ldiring.";
+
+    let msg = "📝 **" + formTitle + "**\n\n" + formDesc + "\n\nDavom etish uchun pastdagi tugmani bosing:";
+    let keyboard = [[{ text: "🚀 Boshlash" }]];
+    
+    sendMessage(chatId, msg, { keyboard: keyboard, resize_keyboard: true, one_time_keyboard: true });
+    return;
+  }
+
+  // 2. "Boshlash" tugmasi bosilganda
+  if (text === "🚀 Boshlash") {
+    userProperties.setProperty(chatId, "0"); 
+    sendQuestionUniversal(chatId, items[0], 1, items.length);
+    return;
+  }
+
+  // 3. Savol-javob jarayoni
+  if (step !== null) {
+    let currentStep = parseInt(step);
+    const currentItem = items[currentStep];
+
+    // CHECKBOX mantiqi
+    if (currentItem.getType() === FormApp.ItemType.CHECKBOX) {
+      if (text === "✅ Tasdiqlash") {
+        let selected = userProperties.getProperty(chatId + "_temp_checkbox") || "";
+        if (!selected) {
+          sendMessage(chatId, "⚠️ Iltimos, kamida bitta variantni tanlang!");
+          return;
+        }
+        saveAndNext(chatId, currentStep, selected, items);
+        userProperties.deleteProperty(chatId + "_temp_checkbox");
+      } else {
+        let current = userProperties.getProperty(chatId + "_temp_checkbox") || "";
+        let list = current ? current.split(", ") : [];
+        if (!list.includes(text)) {
+          list.push(text);
+          userProperties.setProperty(chatId + "_temp_checkbox", list.join(", "));
+          sendMessage(chatId, "📌 Tanlandi: " + list.join(", ") + "\n\nYana tanlang yoki \"Tasdiqlash\"ni bosing.");
+        }
+      }
+      return;
+    }
+    saveAndNext(chatId, currentStep, text, items);
+  }
+}
+
+function saveAndNext(chatId, step, answer, items) {
+  const userProperties = PropertiesService.getUserProperties();
+  let answers = JSON.parse(userProperties.getProperty(chatId + "_answers") || "[]");
+  answers.push(answer);
+  userProperties.setProperty(chatId + "_answers", JSON.stringify(answers));
+
+  let nextStep = step + 1;
+  if (nextStep < items.length) {
+    userProperties.setProperty(chatId, nextStep.toString());
+    sendQuestionUniversal(chatId, items[nextStep], nextStep + 1, items.length);
+  } else {
+    submitToFormUniversal(answers, items);
+    sendMessage(chatId, "✅ **Rahmat!** Ma'lumotlaringiz muvaffaqiyatli qabul qilindi.", { remove_keyboard: true });
+    userProperties.deleteProperty(chatId);
+    userProperties.deleteProperty(chatId + "_answers");
+  }
+}
+
+function sendQuestionUniversal(chatId, item, current, total) {
+  const type = item.getType();
+  const title = item.getTitle();
+  let msg = "📊 **Savol " + current + " / " + total + "**\n\n❓ **" + title + "**";
+  let keyboard = [];
+
+  if (type === FormApp.ItemType.MULTIPLE_CHOICE || type === FormApp.ItemType.LIST) {
+    const choices = (type === FormApp.ItemType.MULTIPLE_CHOICE) ? 
+                    item.asMultipleChoiceItem().getChoices() : item.asListItem().getChoices();
+    keyboard = choices.map(function(c) { return [{ text: c.getValue() }]; });
+  } 
+  else if (type === FormApp.ItemType.CHECKBOX) {
+    const choices = item.asCheckboxItem().getChoices();
+    keyboard = choices.map(function(c) { return [{ text: c.getValue() }]; });
+    keyboard.push([{ text: "✅ Tasdiqlash" }]);
+    msg += "\n\n_(Variantlarni bosing va oxirida Tasdiqlashni bosing)_";
+  } 
+  else if (type === FormApp.ItemType.SCALE) {
+    const scale = item.asScaleItem();
+    let row = [];
+    for (let i = scale.getLowerBound(); i <= scale.getUpperBound(); i++) {
+      row.push({ text: i.toString() });
+      if (row.length === 5) { keyboard.push(row); row = []; }
+    }
+    if (row.length > 0) keyboard.push(row);
+  }
+
+  let markup = { keyboard: keyboard, resize_keyboard: true };
+  if (keyboard.length === 0) markup = { remove_keyboard: true };
+  sendMessage(chatId, msg, markup);
+}
+
+function submitToFormUniversal(answers, items) {
+  const form = FormApp.openById(FORM_ID);
+  const formResponse = form.createResponse();
+  items.forEach(function(item, index) {
+    try {
+      const ans = answers[index];
+      let itemRes;
+      const type = item.getType();
+      if (type === FormApp.ItemType.TEXT || type === FormApp.ItemType.PARAGRAPH) itemRes = item.asTextItem().createResponse(ans);
+      else if (type === FormApp.ItemType.MULTIPLE_CHOICE) itemRes = item.asMultipleChoiceItem().createResponse(ans);
+      else if (type === FormApp.ItemType.CHECKBOX) itemRes = item.asCheckboxItem().createResponse(ans.split(", "));
+      else if (type === FormApp.ItemType.SCALE) itemRes = item.asScaleItem().createResponse(parseInt(ans));
+      if (itemRes) formResponse.withItemResponse(itemRes);
+    } catch (e) { console.log("Xatolik: " + e.message); }
+  });
+  formResponse.submit();
+}
+
+function sendMessage(chatId, text, markup) {
+  let payload = { chat_id: chatId, text: text, parse_mode: "Markdown" };
+  if (markup) payload.reply_markup = JSON.stringify(markup);
+  UrlFetchApp.fetch("https://api.telegram.org/bot" + TOKEN + "/sendMessage", {
+    method: "post", contentType: "application/json", payload: JSON.stringify(payload)
+  });
+}
