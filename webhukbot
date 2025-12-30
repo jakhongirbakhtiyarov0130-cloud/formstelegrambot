@@ -1,0 +1,3 @@
+https://api.telegram.org/bot<telegram bot token>/setWebhook?url=<apps skript link>
+
+shu havolani ozingini telegram bot va apps skript linki bilan almashtirib brauzerda ochishingiz kerak shundan keyin bot ishga tushadi
